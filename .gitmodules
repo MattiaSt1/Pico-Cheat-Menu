@@ -1,0 +1,3 @@
+[submodule "source/libs/libtwl"]
+	path = source/libs/libtwl
+	url = https://github.com/Gericom/libtwl.git

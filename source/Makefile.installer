@@ -1,0 +1,20 @@
+BLOCKSDS ?= /opt/wonderful/thirdparty/blocksds/core
+PREFIX ?= /opt/wonderful/toolchain/gcc-arm-none-eabi/bin/arm-none-eabi-
+CC := $(PREFIX)gcc
+CXX := $(PREFIX)g++
+FLAGS := -mcpu=arm946e-s -mthumb-interwork -mthumb -Os -ffreestanding -fno-builtin -fno-exceptions -fno-rtti -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -Wall -Icommon -I$(BLOCKSDS)/libs/libnds/include
+all: arm9/data/installer.bin
+build/installer/entry.o: installer/entry.s
+	@mkdir -p $(@D)
+	$(CC) $(FLAGS) -c $< -o $@
+build/installer/installer.o: installer/installer.cpp $(wildcard common/*.h)
+	@mkdir -p $(@D)
+	$(CXX) $(FLAGS) -std=gnu++23 -c $< -o $@
+build/installer/installer.elf: build/installer/entry.o build/installer/installer.o installer/installer.ld
+	$(CC) -mcpu=arm946e-s -nostdlib -Wl,--gc-sections,--use-blx,--no-warn-rwx-segments,-Map,build/installer/installer.map -T installer/installer.ld $(filter %.o,$^) -o $@ -lgcc
+arm9/data/installer.bin: build/installer/installer.elf
+	@mkdir -p $(@D)
+	$(PREFIX)objcopy -O binary -j .text $< $@
+clean:
+	rm -rf build/installer arm9/data/installer.bin
+.PHONY: all clean

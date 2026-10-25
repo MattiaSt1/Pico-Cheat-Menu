@@ -1,0 +1,22 @@
+# Build output
+build/
+*.o
+*.d
+*.elf
+*.map
+/source/*.bin
+/source/arm7/data/
+/source/arm9/data/
+/_pico/
+
+# Games, saves, cheat databases, BIOS/NAND, SD images (never in the repository)
+*.nds
+*.dsi
+*.srl
+*.sav
+*.img
+*.dat
+
+# Logs and temporary files
+*.log
+*.err

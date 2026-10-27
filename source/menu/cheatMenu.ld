@@ -1,4 +1,5 @@
-/* The cheat menu is linked at address 0 and must be position independent. */
+/* Linker script of the in-game cheat menu. The blob is linked at address 0 and must be position independent: the
+   resident part loads it into memory with the game's code, at an address that depends on the game. */
 OUTPUT_FORMAT("elf32-littlearm")
 OUTPUT_ARCH(arm)
 ENTRY(cheatmenu_header)

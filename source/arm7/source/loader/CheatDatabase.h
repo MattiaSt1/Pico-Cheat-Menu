@@ -26,6 +26,9 @@ public:
 
     u32 GetItemCount() const { return _itemCount; }
 
+    /// @brief Returns the number of cheats in the menu: the cheats of the game, without its folders, and the extra cheats.
+    u32 GetCheatCount() const { return _cheatCount + _extraCheatCount; }
+
     u32 GetMatchedLauncherCheatCount() const { return _matchedLauncherCheatCount; }
 
     /// @brief Returns the room for enabled cheats in the cheat list (pload_cheat_t entries, without the list header).
@@ -65,6 +68,7 @@ private:
     cheat_menu_sector_run_t _sectorRuns[CHEAT_MENU_MAX_SECTOR_RUNS];
 
     u32 _itemCount = 0;
+    u32 _cheatCount = 0;
     std::unique_ptr<u32[], FreeArray> _itemOffsets;
     u32 _rootCount = 0;
     std::unique_ptr<u16[], FreeArray> _rootItems;

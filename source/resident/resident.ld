@@ -1,4 +1,5 @@
-/* The resident part is linked at address 0 and must be position independent. */
+/* Linker script of the resident part. The blob is linked at address 0 and must be position independent: it runs
+   wherever Pico Loader places the cheat list. */
 OUTPUT_FORMAT("elf32-littlearm")
 OUTPUT_ARCH(arm)
 ENTRY(resident_header)

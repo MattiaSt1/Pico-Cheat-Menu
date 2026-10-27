@@ -1,17 +1,23 @@
+// Entry point of the installer, which the real Pico Loader jumps to instead of to the game (see installer.cpp).
+
 .syntax unified
 .cpu arm946e-s
+
+// Header (parasite_installer_header_t), at the start of the installer.
 .section .header, "ax"
 .arm
 .global installer_header
 installer_header:
-    .word installer_entry
-    .word __installer_end - installer_header
-    .space 8
+    .word installer_entry                           // entryPoint
+    .word __installer_end - installer_header        // size
+    .space 8                                        // listLength, status
+
+// Called with r0 = the arm9 entry point of the game.
 .global installer_entry
 installer_entry:
     mov r4, r0
-    // read/write access in every protection region, to find the cheat list in the arm7 memory
-    // (the game sets up its own protection regions when it starts)
+    // Allow read/write access in every protection region, to find the cheat list in the arm7 memory. The game sets up
+    // its own protection regions when it starts.
     mov r0, #0x33
     orr r0, r0, r0, lsl #8
     orr r0, r0, r0, lsl #16
@@ -21,6 +27,7 @@ installer_entry:
     ldr sp, =installer_stack_top
     blx installer_run
     mov sp, r5
+    // Start the game with the registers cleared, like jumpToArm9EntryPoint of Pico Loader.
     push {r4}
     mov r0, #0
     mov r1, #0
@@ -38,6 +45,10 @@ installer_entry:
     mov lr, #0
     pop {pc}
     .pool
+
+// void installer_flush()
+// Cleans and invalidates the whole data cache (4 segments of 32 lines) and invalidates the instruction cache, so that
+// the hook and the relocated driver are in memory and the patched code is fetched again.
 .global installer_flush
 .type installer_flush, %function
 installer_flush:
@@ -47,15 +58,16 @@ installer_flush:
     mov r0, #0
 2:
     orr r2, r1, r0
-    mcr p15, 0, r3, c7, c10, 4
-    mcr p15, 0, r2, c7, c14, 2
+    mcr p15, 0, r3, c7, c10, 4  // drain write buffer
+    mcr p15, 0, r2, c7, c14, 2  // clean and invalidate data cache line by segment and index
     add r0, r0, #32
     cmp r0, #0x400
     bne 2b
     adds r1, r1, #0x40000000
     bne 1b
-    mcr p15, 0, r3, c7, c5, 0
+    mcr p15, 0, r3, c7, c5, 0   // invalidate instruction cache
     bx lr
+
 .section .data.stack, "aw"
 .balign 8
     .space 1024

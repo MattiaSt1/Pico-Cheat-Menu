@@ -2,18 +2,18 @@
 #include <string.h>
 #include "CheatDatabase.h"
 
-// For reference on the usrcheat.dat format, see for example the cheat parser of wood r4:
-// - The file starts with "R4 CheatCode", followed by an index of 16 byte entries at 0x100
-//   (game code, crc32, u64 offset), terminated by an entry with offset 0.
-// - Each game consists of the game title, the number of items (low 28 bits) followed by 8 master code words,
-//   and the items.
-// - Items are either folders (bit 28 set, low 24 bits is the number of cheats in the folder,
-//   followed by name and note) or cheats (low 24 bits is the size in words of the remainder of the item,
-//   followed by name, note, padding to 4 bytes, the number of opcode words and the opcode words).
-//   Folders are not nested; the cheats of a folder directly follow the folder.
+// Format of usrcheat.dat (see for example the cheat parser of Wood R4):
+// - The file starts with "R4 CheatCode", followed at 0x100 by an index of 16-byte entries (game code, crc32 of the
+//   rom header, u64 offset of the game's block), terminated by an entry with offset 0.
+// - The block of a game consists of the game title, the number of items (low 28 bits), 8 master code words and the
+//   items. Strings are padded to 4 bytes from the start of the block.
+// - An item is either a folder (bit 28 set, the low 24 bits are the number of cheats in the folder), followed by its
+//   name and note, or a cheat (the low 24 bits are the size in words of the rest of the item), followed by its name,
+//   note, padding to 4 bytes, the number of opcode words and the opcode words. Folders are not nested; the cheats of
+//   a folder directly follow it.
 
-#define USRCHEAT_PATH           "/_pico/usrcheat.dat"
 #define USRCHEAT_INDEX_OFFSET   0x100
+#define SECTOR_SIZE             CHEAT_MENU_SECTOR_SIZE
 
 #define ITEM_FLAG_FOLDER        (1u << 28)
 #define ITEM_SIZE_MASK          0x00FFFFFF
@@ -69,7 +69,7 @@ bool CheatDatabase::ReadU32(u32& value)
         {
             return false;
         }
-        result |= byte << (i * 8);
+        result |= (u32)byte << (i * 8);
     }
     value = result;
     return true;
@@ -205,7 +205,7 @@ bool CheatDatabase::IndexGame(const pload_cheats_t* launcherCheats)
 
     _itemOffsets.reset((u32*)malloc(itemCount * sizeof(u32)));
     _rootItems.reset((u16*)malloc(itemCount * sizeof(u16)));
-    // the enable bits are allocated for the maximum number of extra cheats, and copied later
+    // The enable bits have room for the maximum number of extra cheats; WriteImageData copies the used part.
     u32 bitBytes = (itemCount + _launcherCheatCount + 7) / 8;
     _enabledBits.reset((u8*)malloc(bitBytes));
     if (!_itemOffsets || !_rootItems || !_enabledBits) return false;
@@ -235,7 +235,7 @@ bool CheatDatabase::IndexGame(const pload_cheats_t* launcherCheats)
         }
         else
         {
-            // a cheat outside of a folder, parsed below
+            // A cheat outside of a folder, parsed below.
             Seek(itemStart);
         }
 
@@ -265,6 +265,7 @@ bool CheatDatabase::IndexGame(const pload_cheats_t* launcherCheats)
             _allCheatsSize += sizeof(u32) + opcodeWordCount * 4;
             Seek(cheatEnd);
             item++;
+            _cheatCount++;
         }
     }
     _itemCount = itemCount;
@@ -286,8 +287,8 @@ bool CheatDatabase::CreateSectorRuns()
 
     const FATFS* fs = _file->obj.fs;
     u32 sectorsPerCluster = fs->csize;
-    u32 firstSector = _blockOffset / 512;
-    u32 endSector = (_blockOffset + _blockSize + 511) / 512;
+    u32 firstSector = _blockOffset / SECTOR_SIZE;
+    u32 endSector = (_blockOffset + _blockSize + SECTOR_SIZE - 1) / SECTOR_SIZE;
     u32 fileSector = 0;
     for (const DWORD* fragment = &clusterMap[1]; fragment[0] != 0; fragment += 2)
     {
@@ -332,11 +333,11 @@ void CheatDatabase::Load(const void* romHeader, const pload_cheats_t* launcherCh
     memset(_launcherCheatMatched.get(), 0, (_launcherCheatCount + 1) * sizeof(bool));
 
     auto file = std::make_unique<FIL>();
-    if (f_open(file.get(), USRCHEAT_PATH, FA_OPEN_EXISTING | FA_READ) == FR_OK)
+    if (f_open(file.get(), PARASITE_USRCHEAT_PATH, FA_OPEN_EXISTING | FA_READ) == FR_OK)
     {
         _file = file.get();
         u32 gameCode = *(const u32*)((const u8*)romHeader + 0xC);
-        // usrcheat.dat stores the crc32 without the final inversion
+        // usrcheat.dat stores the crc32 of the first 512 bytes of the rom header, without the final inversion.
         u32 crc = crc32((const u8*)romHeader, 512);
         u32 gameOffset, nextGameOffset;
         if (FindGame(gameCode, crc, gameOffset, nextGameOffset))
@@ -348,6 +349,7 @@ void CheatDatabase::Load(const void* romHeader, const pload_cheats_t* launcherCh
                 _blockSize = 0;
                 _sectorRunCount = 0;
                 _itemCount = 0;
+                _cheatCount = 0;
                 _rootCount = 0;
                 _allCheatsSize = 0;
                 _matchedLauncherCheatCount = 0;
@@ -369,7 +371,7 @@ void CheatDatabase::Load(const void* romHeader, const pload_cheats_t* launcherCh
         memset(_enabledBits.get(), 0, bitBytes);
     }
 
-    // launcher cheats that are not in the database are shown as extra cheats
+    // The launcher cheats that are not in the database are shown as extra cheats.
     _extraCheatCount = 0;
     _extraCheatsSize = 0;
     if (launcherCheats)
@@ -398,7 +400,7 @@ void CheatDatabase::Load(const void* romHeader, const pload_cheats_t* launcherCh
 CheatDatabase::DataLayout CheatDatabase::GetDataLayout() const
 {
     DataLayout layout;
-    // the enable bits directly follow the struct, so that both can be written back together
+    // The enable bits directly follow the struct, so that the menu can write both back together.
     u32 offset = align4(sizeof(cheat_menu_data_t));
     layout.enabledBitsOffset = offset;
     offset += align4((_itemCount + _extraCheatCount + 7) / 8);
@@ -429,7 +431,7 @@ void CheatDatabase::WriteImageData(cheat_menu_data_t* data, const pload_cheats_t
     memcpy(base + layout.enabledBitsOffset, _enabledBits.get(), (_itemCount + _extraCheatCount + 7) / 8);
 
     data->blockSize = _blockSize;
-    data->blockSectorOffset = _blockOffset % 512;
+    data->blockSectorOffset = _blockOffset % SECTOR_SIZE;
     data->sectorRunCount = _sectorRunCount;
     memcpy(data->sectorRuns, _sectorRuns, sizeof(_sectorRuns));
 
@@ -454,7 +456,7 @@ void CheatDatabase::WriteImageData(cheat_menu_data_t* data, const pload_cheats_t
     data->rootItemsOffset = layout.rootItemsOffset;
     memcpy(base + layout.rootItemsOffset, _rootItems.get(), _rootCount * sizeof(u16));
 
-    // the launcher cheats that are not in the database
+    // The launcher cheats that are not in the database.
     data->extraCheatCount = _extraCheatCount;
     data->extraCheatsOffset = layout.extraCheatsOffset;
     if (!launcherCheats)

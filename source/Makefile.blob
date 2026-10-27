@@ -1,0 +1,89 @@
+# Builds a position-independent blob: the in-game cheat menu or its resident part. Both are embedded in
+# picoLoader7.bin, which places them where the game can run them.
+#
+#   make -f Makefile.blob NAME=<name> SOURCEDIR=<directory>
+#
+# The blob consists of $(SOURCEDIR)/entry.s, which must start with the header of the blob, and $(SOURCEDIR)/$(NAME).c,
+# linked with $(SOURCEDIR)/$(NAME).ld. Its address is only known at runtime, so it is linked at address 0 and may only
+# use pc-relative addressing. After linking, the build fails if the blob contains absolute relocations (except in the
+# header) or interworking veneers.
+
+.DEFAULT_GOAL := all
+
+export BLOCKSDS			?= /opt/blocksds/core
+export WONDERFUL_TOOLCHAIN	?= /opt/wonderful
+ARM_NONE_EABI_PATH	?= $(WONDERFUL_TOOLCHAIN)/toolchain/gcc-arm-none-eabi/bin/
+
+PREFIX		:= $(ARM_NONE_EABI_PATH)arm-none-eabi-
+CC			:= $(PREFIX)gcc
+OBJCOPY		:= $(PREFIX)objcopy
+READELF		:= $(PREFIX)readelf
+NM			:= $(PREFIX)nm
+
+ifeq ($(NAME),)
+$(error NAME is not set, see the usage at the top of Makefile.blob)
+endif
+ifeq ($(SOURCEDIR),)
+$(error SOURCEDIR is not set, see the usage at the top of Makefile.blob)
+endif
+
+BUILDDIR	:= build/$(NAME)
+ELF			:= $(BUILDDIR)/$(NAME).elf
+BIN			:= arm7/data/$(NAME).bin
+LDSCRIPT	:= $(SOURCEDIR)/$(NAME).ld
+
+SOURCES		:= $(SOURCEDIR)/entry.s $(SOURCEDIR)/$(NAME).c
+OBJS		:= $(patsubst $(SOURCEDIR)/%,$(BUILDDIR)/%.o,$(SOURCES))
+DEPS		:= $(OBJS:.o=.d)
+
+CFLAGS		:= -mthumb -mthumb-interwork -Os -mcpu=arm946e-s+nofp -Wall -std=gnu17 \
+			   -fPIE -fvisibility=hidden -ffreestanding -fno-builtin -fno-jump-tables \
+			   -fno-common -fno-exceptions -fno-asynchronous-unwind-tables \
+			   -ffunction-sections -fdata-sections -Icommon -I$(BLOCKSDS)/libs/libnds/include
+LDFLAGS		:= -mcpu=arm946e-s+nofp -nostdlib -nostartfiles -static \
+			   -Wl,--gc-sections,--emit-relocs,--use-blx,--no-warn-rwx-segments \
+			   -T $(LDSCRIPT)
+
+V := @
+
+.PHONY: all clean FORCE
+
+# Everything is rebuilt when the compiler flags change.
+$(BUILDDIR)/config: FORCE
+	@mkdir -p $(@D)
+	@printf '%s\n' '$(CFLAGS)' > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+
+$(OBJS): $(BUILDDIR)/config
+
+all: $(BIN)
+
+$(BIN): $(ELF)
+	@echo "  OBJCOPY $@"
+	@mkdir -p $(@D)
+	$(V)$(OBJCOPY) -O binary -j .text $< $@
+	@# Only pc-relative relocations are allowed, except in the header (offset 0: entry point, offset 4: total size).
+	$(V)if $(READELF) -rW $< | grep -E "R_ARM_(ABS32|GOT)" | grep -vE "^0000000[04] "; then \
+		echo "error: $(NAME) contains absolute relocations"; rm -f $@; exit 1; fi
+	@# Interworking veneers created by the linker use absolute addresses.
+	$(V)if $(NM) $< | grep -E "_from_(arm|thumb)|_veneer"; then \
+		echo "error: $(NAME) contains interworking veneers"; rm -f $@; exit 1; fi
+
+$(ELF): $(OBJS) $(LDSCRIPT)
+	@echo "  LD      $@"
+	$(V)$(CC) -o $@ $(OBJS) $(LDFLAGS)
+
+$(BUILDDIR)/%.s.o: $(SOURCEDIR)/%.s
+	@echo "  AS      $<"
+	@mkdir -p $(@D)
+	$(V)$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILDDIR)/%.c.o: $(SOURCEDIR)/%.c
+	@echo "  CC      $<"
+	@mkdir -p $(@D)
+	$(V)$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+clean:
+	$(V)rm -rf $(BUILDDIR) $(BIN)
+
+-include $(DEPS)

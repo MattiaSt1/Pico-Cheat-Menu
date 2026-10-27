@@ -1,4 +1,7 @@
-// 8x8 1bpp font for characters 0x20-0x7F, taken from the libnds default console font.
+// Font of the in-game cheat menu and of the status screen of the parasite.
+//
+// The glyphs are the 8x8 font of the libnds default console, for the characters 0x20-0x7F, one byte per pixel row
+// with the leftmost pixel in bit 0.
 // Copyright (C) 2005-2021 Michael Noland (joat), Jason Rogers (dovoto), Dave Murphy (WinterMute)
 // Licensed under the zlib license.
 #pragma once
@@ -102,3 +105,6 @@ static const unsigned char sFont[96 * 8] =
     0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x08, 0x1C, 0x36, 0x63, 0x63, 0x7F, 0x00,
 };
+
+// ASCII replacements for the Latin-1 characters 0xC0-0xFF, which the font does not have (letters lose their accents).
+static const char sLatin1ToAscii[] = "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYPsaaaaaaaceeeeiiiidnooooo/ouuuuypy";

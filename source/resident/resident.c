@@ -1,15 +1,18 @@
-// Resident part of the cheat menu: checks the button combination on vblank and swaps the menu in and out.
+// Resident part of the in-game cheat menu.
+//
+// The resident part is a position-independent blob that the parasite places in the cheat list, so that it stays in
+// the arm7 memory of the game while the game runs. The installer hooks OS_IrqHandler of the game, which makes
+// resident_irqHook (entry.s) run on every interrupt. On vblank, resident_tick checks the button combination; when it is
+// pressed, the resident part:
+//   1. pauses the arm7 cheat engine by setting the number of cheats in the cheat list to 0;
+//   2. takes the SDK card lock, so that the game does not use the DS card slot in the meantime;
+//   3. saves the game's code at menuAddress to the second half of the cheat menu file and loads the menu image there;
+//   4. runs the menu, which returns the new number of cheats;
+//   5. restores the game's code and lets the cheat engine continue with the new cheat list.
+// The game is paused the whole time, since the menu runs inside its interrupt handler.
 
-#include <stdbool.h>
-
-typedef unsigned char u8;
-typedef unsigned short u16;
-typedef unsigned int u32;
-typedef volatile unsigned short vu16;
-typedef volatile unsigned int vu32;
-
-#include "CheatMenuDefinitions.h"
-#include "../arm7/source/loader/dldiHeader.h"
+#include <nds/ndstypes.h>
+#include "cheatMenuFile.h"
 
 #define REG_VCOUNT              (*(vu16*)0x04000006)
 #define REG_KEYINPUT            (*(vu16*)0x04000130)
@@ -20,6 +23,7 @@ typedef volatile unsigned int vu32;
 
 #define EXMEMCNT_CARD_ARM7      (1 << 11)
 #define ROMCTRL_BUSY            (1u << 31)
+#define IRQ_VBLANK              (1 << 0)
 
 #define KEY_SELECT              (1 << 2)
 #define KEY_DOWN                (1 << 7)
@@ -27,21 +31,22 @@ typedef volatile unsigned int vu32;
 #define KEY_L                   (1 << 9)
 #define KEY_MASK                0x3FF
 
+/// @brief The button combination that opens the menu.
 #define MENU_COMBO              (KEY_L | KEY_R | KEY_DOWN | KEY_SELECT)
 
-#define IRQ_VBLANK              1
-
-// SDK lock id used for the card lock, outside of the range allocated by OS_GetLockID.
+/// @brief Owner ID written to the card lock while the menu holds it. It is outside of the range that OS_GetLockID
+///        hands out, so it cannot be mistaken for a lock of the game.
 #define CARD_LOCK_ID            0x7F
-// While the game uses the card, opening the menu is retried on the next vblanks.
+
+/// @brief While the game uses the DS card slot, opening the menu is retried on this many vblanks.
 #define CARD_LOCK_RETRY_FRAMES  60
 
-// The game cannot continue without its code, so reading it back is retried.
+/// @brief Number of attempts to read the game's code back from the sd card. The game cannot continue without it.
 #define RESTORE_ATTEMPTS        8
 
 typedef u32 (*menu_entry_t)(cheat_menu_resident_t* resident, u32 numberOfCheats);
 
-// defined in entry.s; hidden to get pc-relative instead of GOT access
+// Defined in entry.s. Hidden visibility makes the compiler use pc-relative instead of GOT-based access.
 extern cheat_menu_resident_t resident_header __attribute__((visibility("hidden")));
 void resident_flushCaches(const void* start, u32 size) __attribute__((visibility("hidden")));
 u32 resident_swapWord(u32 value, vu32* address) __attribute__((visibility("hidden")));
@@ -59,6 +64,8 @@ static void waitVBlank(void)
     while (REG_VCOUNT != 192);
 }
 
+/// @brief Takes the SDK card lock (an OSLockWord) the same way as OS_TryLockByWord, and gives the arm9 access to the
+///        DS card slot. Returns false if the game holds the lock.
 static bool tryLockCard(void)
 {
     vu32* lockWord = (vu32*)resident_header.cardLockAddress;
@@ -71,6 +78,7 @@ static bool tryLockCard(void)
     return true;
 }
 
+/// @brief Releases the card lock taken by tryLockCard.
 static void unlockCard(void)
 {
     vu32* lockWord = (vu32*)resident_header.cardLockAddress;
@@ -79,38 +87,14 @@ static void unlockCard(void)
     lockWord[0] = 0;
 }
 
-// Reads or writes the given sectors of the cheat menu file.
-static bool transferFileSectors(u32 sector, u32 count, u8* buffer, bool write)
-{
-    const cheat_menu_resident_t* resident = &resident_header;
-    const dldi_header_t* driver = (const dldi_header_t*)resident->dldiDriver;
-    for (u32 i = 0; i < resident->fileRunCount && count != 0; i++)
-    {
-        const cheat_menu_sector_run_t* run = &resident->fileRuns[i];
-        if (sector >= run->count)
-        {
-            sector -= run->count;
-            continue;
-        }
-        u32 n = run->count - sector < count ? run->count - sector : count;
-        bool ok = write ?
-            ((dldi_write_func_t)driver->writeSectorsFuncAddress)(run->sector + sector, n, buffer) :
-            ((dldi_read_func_t)driver->readSectorsFuncAddress)(run->sector + sector, n, buffer);
-        if (!ok)
-            return false;
-        buffer += n * CHEAT_MENU_SECTOR_SIZE;
-        count -= n;
-        sector = 0;
-    }
-    return count == 0;
-}
-
+/// @brief Swaps the menu image in, runs the menu and swaps the game's code back.
 static void openMenu(void)
 {
     cheat_menu_resident_t* resident = &resident_header;
     vu32* numberOfCheats = &resident->list->numberOfCheats;
     u32 cheats = *numberOfCheats;
-    // The engine reads the number of cheats once per vblank: a run that started before has ended after a vblank.
+    // The cheat engine reads the number of cheats once per vblank, so after the next vblank it no longer runs the
+    // cheats and the menu may rewrite them.
     *numberOfCheats = 0;
     const dldi_header_t* driver = (const dldi_header_t*)resident->dldiDriver;
     if (!sDldiStarted)
@@ -122,10 +106,10 @@ static void openMenu(void)
     u32 sectors = resident->imageSectors;
     u32 size = sectors * CHEAT_MENU_SECTOR_SIZE;
     resident_flushCaches(menu, size);
-    // the borrowed memory goes to the sectors after the menu image
-    if (sDldiStarted && transferFileSectors(sectors, sectors, menu, true))
+    // The game's code goes to the sectors after the menu image.
+    if (sDldiStarted && cheatMenuFile_transfer(resident, sectors, sectors, menu, true))
     {
-        bool loaded = transferFileSectors(0, sectors, menu, false);
+        bool loaded = cheatMenuFile_transfer(resident, 0, sectors, menu, false);
         resident_flushCaches(menu, size);
         const cheat_menu_image_header_t* image = (const cheat_menu_image_header_t*)menu;
         if (loaded && image->entryOffset < image->totalSize && image->totalSize <= image->dataOffset &&
@@ -134,12 +118,13 @@ static void openMenu(void)
             cheats = ((menu_entry_t)(menu + image->entryOffset))(resident, cheats);
         }
         resident_flushCaches(menu, size);
-        for (u32 i = 0; i < RESTORE_ATTEMPTS && !transferFileSectors(sectors, sectors, menu, false); i++);
+        for (u32 i = 0; i < RESTORE_ATTEMPTS && !cheatMenuFile_transfer(resident, sectors, sectors, menu, false); i++);
         resident_flushCaches(menu, size);
     }
     *numberOfCheats = cheats;
 }
 
+/// @brief Called by resident_irqHook on every interrupt, before the game's handler runs.
 void resident_tick(void)
 {
     if (!(REG_IE & REG_IF & IRQ_VBLANK))
@@ -156,5 +141,6 @@ void resident_tick(void)
     sOpenFrames = 0;
     openMenu();
     unlockCard();
+    // The menu returns once all keys are released.
     sPreviousKeys = 0;
 }

@@ -90,8 +90,17 @@ extern "C" void loaderMain()
     {
         box->step = PARASITE_STEP_DONE;
         bool problem = box->error != PARASITE_ERROR_NONE && box->error != PARASITE_ERROR_TRANSPARENT;
-        for (u32 i = 0; i < (problem ? RESULT_FRAMES_PROBLEM : RESULT_FRAMES); i++)
+        u32 frames = problem ? RESULT_FRAMES_PROBLEM : RESULT_FRAMES;
+        for (u32 remaining = frames; remaining != 0;)
+        {
             statusScreen_update(box);
+            // The arm7 part and the real Pico Loader wait while the hotkey editor is open, and the result stays on the
+            // screen for the full time after it closes.
+            if (statusScreen_hotkeyActive())
+                remaining = frames;
+            else
+                remaining--;
+        }
     }
 
     parasite_sendSync(PARASITE_SYNC_ARM9_DECIDED);

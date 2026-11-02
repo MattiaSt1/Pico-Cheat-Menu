@@ -8,10 +8,23 @@
 // list that Pico Loader receives (see CheatMenuDefinitions.h).
 
 #include "CheatMenuDefinitions.h"
+#include "cheatMenuHotkey.h"
 
 #define PARASITE_REAL_LOADER9_PATH      "/_pico/loader/picoLoader9.bin"
 #define PARASITE_REAL_LOADER7_PATH      "/_pico/loader/picoLoader7.bin"
 #define PARASITE_USRCHEAT_PATH          "/_pico/usrcheat.dat"
+
+/// @brief The combination that opens the cheat menu, for all games: a little-endian u32 with KEYINPUT bits
+///        (\see cheatMenuHotkey.h).
+#define PARASITE_HOTKEY_PATH            "/_pico/cheatmenu-hotkey.bin"
+
+/// @brief Values of parasite_mailbox_t::hotkeyStatus. The hotkey editor of the arm9 part requests a save while the arm7
+///        part waits for \see PARASITE_SYNC_ARM9_DECIDED. The arm7 part reports the result after it has updated the
+///        resident part and parasite_mailbox_t::hotkey; a failed save leaves both unchanged.
+#define PARASITE_HOTKEY_IDLE            0
+#define PARASITE_HOTKEY_SAVE            1
+#define PARASITE_HOTKEY_SAVED           2
+#define PARASITE_HOTKEY_FAILED          3
 
 /// @brief While this file exists, the parasite boots the real Pico Loader without the cheat menu.
 #define PARASITE_TRANSPARENT_FLAG_PATH  "/_pico/parasite-transparent"
@@ -129,6 +142,15 @@ typedef struct
 
     /// @brief The unit code in the header of the game, to show whether the game starts in DS or DSi mode.
     u32 romUnitCode;
+
+    /// @brief The combination that opens the cheat menu, loaded by the arm7 part before it sets
+    ///        \see PARASITE_STEP_CHEAT_MENU.
+    volatile u32 hotkey;
+
+    /// @brief The combination that the hotkey editor asks to save, and the state of the request
+    ///        (\see PARASITE_HOTKEY_IDLE).
+    volatile u32 requestedHotkey;
+    volatile u32 hotkeyStatus;
 } parasite_mailbox_t;
 
 /// @brief Values of parasite_installer_header_t::status, which tell how far the installer got (for debugging).

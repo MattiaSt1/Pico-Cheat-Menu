@@ -99,6 +99,9 @@ typedef struct
     /// @brief Address of the game's code that the menu image replaces while the menu is open, imageSectors sectors
     ///        long (set by the installer).
     u32 menuAddress;
+
+    /// @brief KEYINPUT bits of the combination that opens the menu (set by the parasite).
+    u32 hotkey;
 } cheat_menu_resident_t;
 
 /// @brief Header at the start of the menu image. The menu code is position independent.

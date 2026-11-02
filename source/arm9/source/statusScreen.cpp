@@ -15,9 +15,11 @@
 #include "../../menu/font.h"
 #include "ndsHeader.h"
 #include "statusScreen.h"
+#include "hotkeyEditor.h"
 
 #define REG_DISPCNT             (*(vu32*)0x04000000)
 #define REG_VCOUNT              (*(vu16*)0x04000006)
+#define REG_KEYINPUT            (*(vu16*)0x04000130)
 #define REG_MASTER_BRIGHT       (*(vu16*)0x0400006C)
 #define REG_VRAMCNT_B           (*(vu8*)0x04000241)
 #define REG_POWCNT              (*(vu16*)0x04000304)
@@ -47,6 +49,7 @@
 #define STEP_ROW                6 // one row per step
 #define MESSAGE_ROW             10
 #define STARTING_ROW            13
+#define HOTKEY_ROW              18
 #define HINT_ROW                22
 
 // The colors of the cheat menu.
@@ -69,6 +72,12 @@ static const u16 sColors[] = { 0x0000, 0x7FFF, 0x4E73, 0x13BF, 0x13E4, 0x109F, 0
 static u32 sShown;
 static u32 sComposedStep;
 static u32 sComposedError;
+static u32 sComposedHotkey;
+static u32 sComposedState;
+static u32 sComposedCandidate;
+static u32 sComposedResetSeconds;
+static u32 sComposedExitReady;
+static HotkeyEditor sEditor;
 static u16 sCells[TEXT_ROWS * TEXT_COLUMNS];
 static u16 sDrawnCells[TEXT_ROWS * TEXT_COLUMNS];
 
@@ -101,6 +110,87 @@ static u32 putText(u32 column, u32 row, const char* text, u32 color)
         }
     }
     return column;
+}
+
+/// @brief Shows the whole combination, wrapping between buttons if it needs a second row.
+static void putHotkey(u32 row, u32 hotkey, u32 color)
+{
+    static const struct { u32 key; const char* name; } buttons[] =
+    {
+        { CHEAT_MENU_KEY_L, "L" }, { CHEAT_MENU_KEY_R, "R" },
+        { CHEAT_MENU_KEY_UP, "Up" }, { CHEAT_MENU_KEY_DOWN, "Down" },
+        { CHEAT_MENU_KEY_LEFT, "Left" }, { CHEAT_MENU_KEY_RIGHT, "Right" },
+        { CHEAT_MENU_KEY_A, "A" }, { CHEAT_MENU_KEY_B, "B" },
+        { CHEAT_MENU_KEY_START, "Start" }, { CHEAT_MENU_KEY_SELECT, "Select" }
+    };
+    u32 column = 1;
+    for (const auto& button : buttons)
+    {
+        if (!(hotkey & button.key))
+            continue;
+        if (column != 1)
+            column = putText(column, row, "+", color);
+        if (column + strlen(button.name) > TEXT_COLUMNS - 1)
+        {
+            row++;
+            column = 1;
+        }
+        column = putText(column, row, button.name, color);
+    }
+    if (!hotkey)
+        putText(1, row, "...", color);
+}
+
+static void composeHotkeyEditor()
+{
+    clearCells();
+    putText(1, TITLE_ROW, "Change menu hotkey", COLOR_YELLOW);
+    putText(1, 4, "New combination:", COLOR_WHITE);
+    putHotkey(6, sEditor.candidate, COLOR_CYAN);
+    switch (sEditor.state)
+    {
+        case HotkeyEditor::RELEASE:
+            putText(1, 10, "Release all buttons", COLOR_WHITE);
+            break;
+        case HotkeyEditor::CAPTURE:
+        case HotkeyEditor::FAILED:
+            if (sEditor.state == HotkeyEditor::FAILED)
+                putText(1, 10, "Can't save the hotkey to SD.\nPrevious hotkey is still active", COLOR_RED);
+            else if (sEditor.candidate && !cheatMenuHotkey_isValid(sEditor.candidate))
+                putText(1, 10, "Invalid combination", COLOR_RED);
+            putText(1, 13, "Press a button to add/remove", COLOR_GRAY);
+            putText(1, 14, "A B L R Start Select + D-pad", COLOR_GRAY);
+            if (cheatMenuHotkey_isValid(sEditor.candidate))
+                putText(1, 16, "Hold Start 1s: Save to SD", COLOR_GREEN);
+            break;
+        case HotkeyEditor::SAVING:
+            putText(1, 10, "Saving to SD...", COLOR_WHITE);
+            break;
+        case HotkeyEditor::SAVED:
+            putText(1, 10, "Hotkey saved", COLOR_GREEN);
+            putText(1, 16, "A: Continue", COLOR_WHITE);
+            break;
+        default:
+            putText(1, 10, "Release all buttons", COLOR_WHITE);
+            break;
+    }
+    if (sEditor.state != HotkeyEditor::SAVING && sEditor.state != HotkeyEditor::CLOSING)
+    {
+        putText(1, 18, "Hold B 2s, release: Exit", COLOR_GRAY);
+        putText(1, 19, "Hold B 5s: Reset to default", COLOR_GRAY);
+    }
+    if (sEditor.ExitReady())
+    {
+        // After a save, leaving the editor keeps the saved combination.
+        putText(1, 21, sEditor.state == HotkeyEditor::SAVED ? "Release B: Continue" : "Release B: Exit without saving",
+            COLOR_YELLOW);
+    }
+    if (sEditor.ResetSeconds())
+    {
+        char countdown[32];
+        mini_snprintf(countdown, sizeof(countdown), "Reset to default in %u...", sEditor.ResetSeconds());
+        putText(1, 22, countdown, COLOR_YELLOW);
+    }
 }
 
 /// @brief Puts the file name of the game in at most two rows. Latin-1 letters lose their accents like in the cheat
@@ -174,6 +264,11 @@ static const char* getErrorText(u32 error)
 /// @brief Composes the screen for the given step and error.
 static void compose(const parasite_mailbox_t* box, u32 step, u32 error)
 {
+    if (sEditor.state != HotkeyEditor::IDLE && sEditor.state != HotkeyEditor::RETURNING)
+    {
+        composeHotkeyEditor();
+        return;
+    }
     clearCells();
     putText(1, TITLE_ROW, "Pico Cheat Menu", COLOR_YELLOW);
     putGameName(((const pload_header7_t*)box->launcherHeader)->loadParams.romPath);
@@ -202,8 +297,13 @@ static void compose(const parasite_mailbox_t* box, u32 step, u32 error)
 
     if (showError)
         putText(1, MESSAGE_ROW, getErrorText(error), fatal ? COLOR_RED : COLOR_YELLOW);
-    else // shown from the start, so that there is time to read it
-        putText(1, HINT_ROW, "L+R+Down+Select opens the menu", COLOR_GRAY);
+    // The arm7 part loads the saved combination before the cheat menu step; until then box->hotkey is the default.
+    if (step >= PARASITE_STEP_CHEAT_MENU && (!showError || box->installCheatMenu))
+    {
+        putText(1, HOTKEY_ROW - 1, "In-game menu hotkey:", COLOR_GRAY);
+        putHotkey(HOTKEY_ROW, box->hotkey, COLOR_CYAN);
+        putText(1, HINT_ROW, "Hold Down to change the hotkey", COLOR_GRAY);
+    }
 }
 
 static void drawCell(u32 index, u16 cell)
@@ -254,7 +354,12 @@ void statusScreen_show()
     REG_POWCNT = POWCNT_LCD | POWCNT_2D_MAIN | POWCNT_2D_SUB | POWCNT_MAIN_ON_TOP;
 }
 
-void statusScreen_update(const parasite_mailbox_t* box)
+bool statusScreen_hotkeyActive()
+{
+    return sEditor.state != HotkeyEditor::IDLE;
+}
+
+void statusScreen_update(parasite_mailbox_t* box)
 {
     while (REG_VCOUNT == 192);
     while (REG_VCOUNT != 192);
@@ -262,10 +367,21 @@ void statusScreen_update(const parasite_mailbox_t* box)
         return;
     u32 step = box->step;
     u32 error = box->error;
-    if (step != sComposedStep || error != sComposedError)
+    sEditor.Update(~REG_KEYINPUT & CHEAT_MENU_KEY_MASK, box);
+    u32 hotkey = box->hotkey;
+    u32 resetSeconds = sEditor.ResetSeconds();
+    u32 exitReady = sEditor.ExitReady();
+    if (step != sComposedStep || error != sComposedError || hotkey != sComposedHotkey ||
+        (u32)sEditor.state != sComposedState || sEditor.candidate != sComposedCandidate ||
+        resetSeconds != sComposedResetSeconds || exitReady != sComposedExitReady)
     {
+        sComposedExitReady = exitReady;
         sComposedStep = step;
         sComposedError = error;
+        sComposedHotkey = hotkey;
+        sComposedState = sEditor.state;
+        sComposedCandidate = sEditor.candidate;
+        sComposedResetSeconds = resetSeconds;
         compose(box, step, error);
     }
     drawChangedCells();

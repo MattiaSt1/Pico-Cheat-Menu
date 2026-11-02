@@ -2,8 +2,9 @@
 
 An in-game cheat menu for [Pico Loader](https://github.com/LNH-team/pico-loader) on the DSpico.
 
-Press **L + R + Down + Select** while a game is running to open the menu. It lists every cheat of the game from
-`usrcheat.dat`, including folders and notes, and turns cheats on and off without restarting the game.
+Press **L + R + Down + Select** (the default combination, which can be changed on the status screen) while a game is
+running to open the menu. It lists every cheat of the game from `usrcheat.dat`, including folders and notes, and turns
+cheats on and off without restarting the game.
 
 ## Features
 
@@ -29,6 +30,28 @@ Press **L + R + Down + Select** while a game is running to open the menu. It lis
 The changes are applied when the menu is closed.
 
 ## Status screen
+
+Hold **Down** on the startup status screen to change the combination that opens the in-game menu. Startup pauses
+while the hotkey editor is open:
+
+1. Release all buttons, then press the buttons to include. Each press adds or removes a button; you can select them
+   individually or together, including **L + R + A + B**. Releasing them keeps the selection on screen.
+2. Hold **Start alone for one second** to save. A short Start press adds or removes Start from the combination.
+3. After saving, press **A** to continue starting the game.
+
+To leave the editor without saving, hold **B alone for two seconds** and release it when the screen shows
+"Release B": the previous combination stays active and the game starts. After a save, this works like A.
+
+Hold **B alone for five seconds** in the editor to save the default **L + R + Down + Select** combination and return
+to the main status screen. A countdown shows the remaining time; releasing B earlier (exiting after two seconds) or
+pressing another button interrupts the countdown. The game stays paused while the reset is saved and until B is
+released.
+
+Supported buttons are **A, B, L, R, Start, Select and the D-pad**. X, Y and touch are not supported.
+The combination is saved globally in `/_pico/cheatmenu-hotkey.bin` and takes effect for this game and future starts.
+The status screen shows the current combination. Deleting the settings file restores the default; missing or invalid
+settings also use the default. If saving fails, the editor reports it and keeps the previous combination active.
+The editor is available when the in-game cheat menu can be installed.
 
 While a game starts, the top screen shows the progress: the SD card, the real Pico Loader and the cheat menu with the
 number of cheats of the game. If the cheat menu is not available, the screen tells why and the game starts without it:

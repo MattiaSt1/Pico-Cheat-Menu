@@ -11,4 +11,7 @@ void statusScreen_show();
 
 /// @brief Waits for the start of the next vblank. If the status screen is shown, it then draws what changed in
 ///        \p box.
-void statusScreen_update(const parasite_mailbox_t* box);
+void statusScreen_update(parasite_mailbox_t* box);
+
+/// @brief Returns whether the hotkey editor is open. The game does not start until it is closed.
+bool statusScreen_hotkeyActive();

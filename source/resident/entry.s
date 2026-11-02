@@ -22,6 +22,7 @@ irqHandlerContinueAddress:
     .word 0                     // dldiDriver
     .word 0                     // list
     .word 0                     // menuAddress
+    .word 0                     // hotkey
 
 // The installer replaces the first instructions of OS_IrqHandler with code that saves the access permissions of the
 // protection regions in r0 (data) and r1 (instructions), allows read/write access in every region and jumps here.

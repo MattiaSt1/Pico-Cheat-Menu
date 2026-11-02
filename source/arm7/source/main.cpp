@@ -79,6 +79,49 @@ static bool fileExists(const char* path)
     return f_stat(path, &info) == FR_OK;
 }
 
+/// @brief Loads the combination that opens the menu from \see PARASITE_HOTKEY_PATH. A missing, truncated or invalid
+///        file gives the default combination.
+static u32 loadHotkey()
+{
+    FIL file;
+    if (f_open(&file, PARASITE_HOTKEY_PATH, FA_READ) != FR_OK)
+        return CHEAT_MENU_DEFAULT_HOTKEY;
+    u32 hotkey;
+    bool valid = f_size(&file) == sizeof(hotkey) && readAt(&file, 0, &hotkey, sizeof(hotkey)) &&
+        cheatMenuHotkey_isValid(hotkey);
+    f_close(&file);
+    return valid ? hotkey : CHEAT_MENU_DEFAULT_HOTKEY;
+}
+
+/// @brief Saves the combination requested by the hotkey editor of the arm9 part and, on success, makes it the
+///        combination of the resident part. The result is reported in parasite_mailbox_t::hotkeyStatus.
+static void saveHotkey(parasite_mailbox_t* box)
+{
+    u32 hotkey = box->requestedHotkey;
+    bool saved = false;
+    if (box->installCheatMenu && cheatMenuHotkey_isValid(hotkey))
+    {
+        // The file is overwritten in place and only then cut to size, so that a failed write leaves the previous
+        // combination in the file instead of an empty file.
+        FIL file;
+        if (f_open(&file, PARASITE_HOTKEY_PATH, FA_OPEN_ALWAYS | FA_WRITE) == FR_OK)
+        {
+            UINT written;
+            saved = f_write(&file, &hotkey, sizeof(hotkey), &written) == FR_OK && written == sizeof(hotkey) &&
+                f_truncate(&file) == FR_OK && f_sync(&file) == FR_OK;
+            if (f_close(&file) != FR_OK)
+                saved = false;
+        }
+    }
+    if (saved)
+    {
+        auto resident = (cheat_menu_resident_t*)((u8*)box->cheatList + box->cheatList->marker[5]);
+        resident->hotkey = hotkey;
+        box->hotkey = hotkey;
+    }
+    box->hotkeyStatus = saved ? PARASITE_HOTKEY_SAVED : PARASITE_HOTKEY_FAILED;
+}
+
 /// @brief Loads the given file into reserved memory. Returns \c nullptr if it is missing, empty, larger than
 ///        \p maximumSize or cannot be read.
 static void* loadFile(const char* path, u32 maximumSize, u32& size)
@@ -346,6 +389,7 @@ static cheat_menu_list_header_t* buildCheatList(const parasite_mailbox_t* box, u
     auto header = (cheat_menu_resident_t*)resident;
     header->dldiOffset = dldiOffset;
     header->imageSectors = imageSize / CHEAT_MENU_SECTOR_SIZE;
+    header->hotkey = box->hotkey;
     memcpy(resident + dldiOffset, driver, driverSize);
     return list;
 }
@@ -442,6 +486,7 @@ extern "C" void loaderMain()
     // Copy what the launcher passed before the arm9 part may change any mappings or memory.
     auto box = (parasite_mailbox_t*)PARASITE_MAILBOX_ADDRESS;
     memset(box, 0, sizeof(*box));
+    box->hotkey = CHEAT_MENU_DEFAULT_HOTKEY;
     static_assert(sizeof(gLoaderHeader) <= sizeof(box->launcherHeader));
     memcpy(box->launcherHeader, &gLoaderHeader, sizeof(gLoaderHeader));
     box->passThrough = isBootFile(gLoaderHeader.loadParams.romPath, sizeof(gLoaderHeader.loadParams.romPath));
@@ -474,7 +519,10 @@ extern "C" void loaderMain()
     if (!box->realLoader7 || !box->realLoader9 || box->realLoader7Size < sizeof(pload_header7_t))
         fail(PARASITE_ERROR_REAL_LOADER);
 
-    // The cheat menu, except for the boot file of the DSpico.
+    // The cheat menu, except for the boot file of the DSpico. The combination is loaded before the step changes, since
+    // the status screen shows it from this step on.
+    if (!box->passThrough)
+        box->hotkey = loadHotkey();
     box->step = PARASITE_STEP_CHEAT_MENU;
     if (!box->passThrough)
     {
@@ -491,7 +539,11 @@ extern "C" void loaderMain()
         box->installCheatMenu = box->error == PARASITE_ERROR_NONE;
     }
     parasite_sendSync(PARASITE_SYNC_PREPARED);
-    parasite_waitSync(PARASITE_SYNC_ARM9_DECIDED);
+    while (parasite_receivedSync() != PARASITE_SYNC_ARM9_DECIDED)
+    {
+        if (box->hotkeyStatus == PARASITE_HOTKEY_SAVE)
+            saveHotkey(box);
+    }
 
     // The arm9 part now maps VRAM C and D, where this code runs, to itself to copy the real Pico Loader there. A small
     // stub in arm7 WRAM waits for it and jumps to the real Pico Loader (handoff.s). From here on, no code in VRAM may

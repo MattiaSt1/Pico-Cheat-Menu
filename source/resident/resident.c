@@ -13,6 +13,7 @@
 
 #include <nds/ndstypes.h>
 #include "cheatMenuFile.h"
+#include "cheatMenuHotkey.h"
 
 #define REG_VCOUNT              (*(vu16*)0x04000006)
 #define REG_KEYINPUT            (*(vu16*)0x04000130)
@@ -24,15 +25,6 @@
 #define EXMEMCNT_CARD_ARM7      (1 << 11)
 #define ROMCTRL_BUSY            (1u << 31)
 #define IRQ_VBLANK              (1 << 0)
-
-#define KEY_SELECT              (1 << 2)
-#define KEY_DOWN                (1 << 7)
-#define KEY_R                   (1 << 8)
-#define KEY_L                   (1 << 9)
-#define KEY_MASK                0x3FF
-
-/// @brief The button combination that opens the menu.
-#define MENU_COMBO              (KEY_L | KEY_R | KEY_DOWN | KEY_SELECT)
 
 /// @brief Owner ID written to the card lock while the menu holds it. It is outside of the range that OS_GetLockID
 ///        hands out, so it cannot be mistaken for a lock of the game.
@@ -129,8 +121,9 @@ void resident_tick(void)
 {
     if (!(REG_IE & REG_IF & IRQ_VBLANK))
         return;
-    u32 keys = ~REG_KEYINPUT & KEY_MASK;
-    if ((keys & MENU_COMBO) == MENU_COMBO && (sPreviousKeys & MENU_COMBO) != MENU_COMBO)
+    u32 keys = ~REG_KEYINPUT & CHEAT_MENU_KEY_MASK;
+    u32 hotkey = resident_header.hotkey;
+    if ((keys & hotkey) == hotkey && (sPreviousKeys & hotkey) != hotkey)
         sOpenFrames = CARD_LOCK_RETRY_FRAMES;
     sPreviousKeys = keys;
     if (sOpenFrames == 0)

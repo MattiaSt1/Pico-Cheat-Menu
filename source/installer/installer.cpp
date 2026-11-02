@@ -18,7 +18,7 @@
 extern "C" parasite_installer_header_t installer_header;
 extern "C" void installer_flush();
 
-static_assert(sizeof(cheat_menu_resident_t) == 104, "Must match the header in resident/entry.s");
+static_assert(sizeof(cheat_menu_resident_t) == 108, "Must match the header in resident/entry.s");
 static_assert(sizeof(parasite_installer_header_t) == 16, "Must match the header in installer/entry.s");
 
 /// @brief Adds delta to every word in [begin, end) that points into [oldStart, oldEnd).

@@ -20,8 +20,6 @@ public:
     ///        cheats of the game together, and never smaller than the launcher cheats.
     void Load(const void* romHeader, const pload_cheats_t* launcherCheats, u32 maxActiveCheatsSize);
 
-    bool HasCheats() const { return _itemCount != 0 || _extraCheatCount != 0; }
-
     bool IsGameInDatabase() const { return _blockSize != 0; }
 
     u32 GetItemCount() const { return _itemCount; }

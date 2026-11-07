@@ -1,18 +1,22 @@
 // Status screen of the parasite on the top screen.
 //
 // It shows the game, the progress of the parasite and whether the cheat menu is available, so that the screen does not
-// stay blank while the arm7 part works. The text uses the font of the cheat menu and is drawn into a bitmap in VRAM B,
-// which the top screen shows in VRAM display mode; the real Pico Loader clears VRAM B when it starts.
+// stay blank while the arm7 part works. The screen has the style of the cheat menu: a band with the title at the top, a
+// band with the buttons at the bottom, and rows with room around their text between them. The text uses the font and
+// the icons of the cheat menu and is drawn into a bitmap in VRAM B, which the top screen shows in VRAM display mode;
+// the real Pico Loader clears VRAM B when it starts.
 //
-// The screen is composed as a grid of text cells, and only the cells that changed are drawn, right after the start of
-// vblank, so that updates do not flicker. The variables of the arm9 part are in VRAM, which does not support 8-bit
-// writes, so each cell is a 16-bit value: the color in the high byte and the character in the low byte.
+// The screen is composed as a grid of text cells: the first row is the band at the top and the last row the band at the
+// bottom. Only the cells that changed are drawn, right after the start of vblank, so that updates do not flicker. The
+// variables of the arm9 part are in VRAM, which does not support 8-bit writes, so each cell is a 16-bit value: the
+// color in the high byte and the character in the low byte.
 
 #include <nds/ndstypes.h>
 #include <string.h>
 #include "core/mini-printf.h"
 #include "../../include/picoLoader7.h"
 #include "../../menu/font.h"
+#include "../../menu/icons.h"
 #include "ndsHeader.h"
 #include "statusScreen.h"
 #include "hotkeyEditor.h"
@@ -42,29 +46,58 @@
 #define SCREEN_HEIGHT           192
 
 #define TEXT_COLUMNS            (SCREEN_WIDTH / 8)
-#define TEXT_ROWS               (SCREEN_HEIGHT / 8)
-#define TITLE_ROW               1
-#define GAME_ROW                3
-#define GAME_ROWS               2
-#define STEP_ROW                6 // one row per step
-#define MESSAGE_ROW             10
-#define STARTING_ROW            13
-#define HOTKEY_ROW              18
-#define HINT_ROW                22
 
-// The colors of the cheat menu.
+// The bands, with their text in the middle, and the rows between them. The first row of the grid is the band at the
+// top.
+#define BAND_HEIGHT             16
+#define HEADER_TEXT_Y           4
+#define STATUS_TEXT_Y           (SCREEN_HEIGHT - BAND_HEIGHT + 4)
+#define ROW_HEIGHT              12
+#define FIRST_ROW_TEXT_Y        (BAND_HEIGHT + 4)
+#define HEADER_ROW              0
+#define STATUS_ROW              14
+#define TEXT_ROWS               (STATUS_ROW + 1)
+
+// The rows of the progress: the game, the steps (one row each), the reason why something went wrong (two rows) and the
+// current combination (two rows).
+#define GAME_ROW                1
+#define GAME_ROWS               2
+#define FIRST_LINE_ROW          3
+#define STEP_ROW                4
+#define SECOND_LINE_ROW         7
+#define MESSAGE_ROW             8
+#define STARTING_ROW            10
+#define HOTKEY_LABEL_ROW        11
+#define HOTKEY_ROW              12
+
+// The rows of the hotkey editor.
+#define EDITOR_LABEL_ROW        1
+#define EDITOR_HOTKEY_ROW       2
+#define EDITOR_FIRST_LINE_ROW   4
+#define EDITOR_MESSAGE_ROW      5
+#define EDITOR_SECOND_LINE_ROW  7
+#define EDITOR_HELP_ROW         8
+#define EDITOR_EXIT_ROW         10
+#define EDITOR_RESET_ROW        11
+
+// The colors of the cheat menu, and red for errors.
 enum
 {
     COLOR_NONE,
     COLOR_WHITE,
-    COLOR_GRAY,
     COLOR_YELLOW,
     COLOR_GREEN,
     COLOR_RED,
-    COLOR_CYAN
+    COLOR_CYAN,
+    COLOR_LIGHT,
+    COLOR_LINE,
+    COLOR_SIGNATURE
 };
 
-static const u16 sColors[] = { 0x0000, 0x7FFF, 0x4E73, 0x13BF, 0x13E4, 0x109F, 0x7EE0 };
+static const u16 sColors[] = { 0x0000, 0x7FFF, 0x13BF, 0x13E4, 0x109F, 0x7EE0, 0x6AF5, 0x4A29, 0x51CC };
+
+#define BACKDROP_COLOR          0x2083 // navy
+#define BAND_COLOR              0x3D06 // dark blue
 
 /// @brief An empty cell. Spaces have no color, so that all empty cells are equal.
 #define EMPTY_CELL              ' '
@@ -112,6 +145,20 @@ static u32 putText(u32 column, u32 row, const char* text, u32 color)
     return column;
 }
 
+/// @brief Puts a text with the icons of buttons: the icons are white and the text is light gray.
+static void putKeyHint(u32 column, u32 row, const char* hint)
+{
+    for (; *hint != 0; hint++)
+        putChar(column++, row, *hint, (u8)*hint >= ICON_FIRST_CHAR ? COLOR_WHITE : COLOR_LIGHT);
+}
+
+/// @brief Fills a row with a horizontal line.
+static void putLine(u32 row)
+{
+    for (u32 column = 1; column < TEXT_COLUMNS - 1; column++)
+        putChar(column, row, ICON_LINE[0], COLOR_LINE);
+}
+
 /// @brief Shows the whole combination, wrapping between buttons if it needs a second row.
 static void putHotkey(u32 row, u32 hotkey, u32 color)
 {
@@ -144,52 +191,63 @@ static void putHotkey(u32 row, u32 hotkey, u32 color)
 static void composeHotkeyEditor()
 {
     clearCells();
-    putText(1, TITLE_ROW, "Change menu hotkey", COLOR_YELLOW);
-    putText(1, 4, "New combination:", COLOR_WHITE);
-    putHotkey(6, sEditor.candidate, COLOR_CYAN);
+    putText(1, HEADER_ROW, "Change menu hotkey", COLOR_WHITE);
+    putText(1, EDITOR_LABEL_ROW, "New combination:", COLOR_LIGHT);
+    putHotkey(EDITOR_HOTKEY_ROW, sEditor.candidate, COLOR_CYAN);
+    putLine(EDITOR_FIRST_LINE_ROW);
+    putLine(EDITOR_SECOND_LINE_ROW);
     switch (sEditor.state)
     {
         case HotkeyEditor::RELEASE:
-            putText(1, 10, "Release all buttons", COLOR_WHITE);
+            putText(1, EDITOR_MESSAGE_ROW, "Release all buttons", COLOR_WHITE);
             break;
         case HotkeyEditor::CAPTURE:
         case HotkeyEditor::FAILED:
             if (sEditor.state == HotkeyEditor::FAILED)
-                putText(1, 10, "Can't save the hotkey to SD.\nPrevious hotkey is still active", COLOR_RED);
+            {
+                putText(1, EDITOR_MESSAGE_ROW, "Can't save the hotkey to SD.\nPrevious hotkey is still active",
+                    COLOR_RED);
+            }
             else if (sEditor.candidate && !cheatMenuHotkey_isValid(sEditor.candidate))
-                putText(1, 10, "Invalid combination", COLOR_RED);
-            putText(1, 13, "Press a button to add/remove", COLOR_GRAY);
-            putText(1, 14, "A B L R Start Select + D-pad", COLOR_GRAY);
+            {
+                putText(1, EDITOR_MESSAGE_ROW, "Invalid combination", COLOR_RED);
+            }
+            putText(1, EDITOR_HELP_ROW, "Press a button to add/remove", COLOR_LIGHT);
+            putText(1, EDITOR_HELP_ROW + 1, "A B L R Start Select + D-pad", COLOR_LIGHT);
             if (cheatMenuHotkey_isValid(sEditor.candidate))
-                putText(1, 16, "Hold Start 1s: Save to SD", COLOR_GREEN);
+                putKeyHint(1, STATUS_ROW, "Hold " ICON_KEY_START " 1s: Save to SD");
             break;
         case HotkeyEditor::SAVING:
-            putText(1, 10, "Saving to SD...", COLOR_WHITE);
+            putText(1, EDITOR_MESSAGE_ROW, "Saving to SD...", COLOR_WHITE);
             break;
         case HotkeyEditor::SAVED:
-            putText(1, 10, "Hotkey saved", COLOR_GREEN);
-            putText(1, 16, "A: Continue", COLOR_WHITE);
+            putText(1, EDITOR_MESSAGE_ROW, "Hotkey saved", COLOR_GREEN);
+            putKeyHint(1, STATUS_ROW, ICON_KEY_A " Continue");
             break;
         default:
-            putText(1, 10, "Release all buttons", COLOR_WHITE);
+            putText(1, EDITOR_MESSAGE_ROW, "Release all buttons", COLOR_WHITE);
             break;
     }
-    if (sEditor.state != HotkeyEditor::SAVING && sEditor.state != HotkeyEditor::CLOSING)
-    {
-        putText(1, 18, "Hold B 2s, release: Exit", COLOR_GRAY);
-        putText(1, 19, "Hold B 5s: Reset to default", COLOR_GRAY);
-    }
+    bool showHelp = sEditor.state != HotkeyEditor::SAVING && sEditor.state != HotkeyEditor::CLOSING;
     if (sEditor.ExitReady())
     {
         // After a save, leaving the editor keeps the saved combination.
-        putText(1, 21, sEditor.state == HotkeyEditor::SAVED ? "Release B: Continue" : "Release B: Exit without saving",
-            COLOR_YELLOW);
+        putText(1, EDITOR_EXIT_ROW, sEditor.state == HotkeyEditor::SAVED ? "Release B: Continue" :
+            "Release B: Exit without saving", COLOR_YELLOW);
+    }
+    else if (showHelp)
+    {
+        putText(1, EDITOR_EXIT_ROW, "Hold B 2s, release: Exit", COLOR_LIGHT);
     }
     if (sEditor.ResetSeconds())
     {
         char countdown[32];
         mini_snprintf(countdown, sizeof(countdown), "Reset to default in %u...", sEditor.ResetSeconds());
-        putText(1, 22, countdown, COLOR_YELLOW);
+        putText(1, EDITOR_RESET_ROW, countdown, COLOR_YELLOW);
+    }
+    else if (showHelp)
+    {
+        putText(1, EDITOR_RESET_ROW, "Hold B 5s: Reset to default", COLOR_LIGHT);
     }
 }
 
@@ -226,21 +284,18 @@ static void putGameName(const char* path)
     }
 }
 
-/// @brief Puts "Label ....... result" on the row of the given step, or "Label..." while the step is in progress
-///        (\p result is \c nullptr).
+/// @brief Puts the label of the given step on its row with the result at the end of the row, or "Label..." while the
+///        step is in progress (\p result is \c nullptr).
 static void putStep(u32 step, const char* label, const char* result, u32 color)
 {
     u32 row = STEP_ROW + step;
-    u32 column = putText(1, row, label, COLOR_WHITE);
+    u32 column = putText(1, row, label, COLOR_LIGHT);
     if (!result)
     {
-        putText(column, row, "...", COLOR_WHITE);
+        putText(column, row, "...", COLOR_LIGHT);
         return;
     }
-    u32 resultColumn = TEXT_COLUMNS - 1 - strlen(result);
-    while (++column < resultColumn - 1)
-        putChar(column, row, '.', COLOR_GRAY);
-    putText(resultColumn, row, result, color);
+    putText(TEXT_COLUMNS - 1 - strlen(result), row, result, color);
 }
 
 static const char* getErrorText(u32 error)
@@ -252,8 +307,7 @@ static const char* getErrorText(u32 error)
         case PARASITE_ERROR_REAL_LOADER:        return "Pico Loader not found in\n/_pico/loader/";
         case PARASITE_ERROR_TRANSPARENT:        return "Turned off by\n/_pico/parasite-transparent";
         case PARASITE_ERROR_GAME_UNSUPPORTED:   return "Game not supported by the menu";
-        case PARASITE_ERROR_NO_USRCHEAT:        return "/_pico/usrcheat.dat not found";
-        case PARASITE_ERROR_GAME_NOT_FOUND:     return "Game not found in usrcheat.dat";
+        case PARASITE_ERROR_NO_SEARCH_FILE:     return "Can't create\n/_pico/cheatsearch.bin";
         case PARASITE_ERROR_OUT_OF_MEMORY:      return "Too many cheats for the menu";
         case PARASITE_ERROR_MENU_FILE:          return "Can't write\n/_pico/cheatmenu.bin";
         case PARASITE_ERROR_LOADER_UNSUPPORTED: return "This Pico Loader version is\nnot supported by the menu";
@@ -270,8 +324,11 @@ static void compose(const parasite_mailbox_t* box, u32 step, u32 error)
         return;
     }
     clearCells();
-    putText(1, TITLE_ROW, "Pico Cheat Menu", COLOR_YELLOW);
+    putText(1, HEADER_ROW, "Pico Cheat Menu", COLOR_WHITE);
+    putText(TEXT_COLUMNS - 13, HEADER_ROW, "By Esentasse", COLOR_SIGNATURE);
     putGameName(((const pload_header7_t*)box->launcherHeader)->loadParams.romPath);
+    putLine(FIRST_LINE_ROW);
+    putLine(SECOND_LINE_ROW);
 
     // An error before the cheat menu step stops the parasite. The reason why the cheat menu is off is only shown once
     // the arm9 part has decided, since it may still change.
@@ -287,7 +344,11 @@ static void compose(const parasite_mailbox_t* box, u32 step, u32 error)
     else if (step == PARASITE_STEP_DONE)
     {
         char count[16];
-        mini_snprintf(count, sizeof(count), box->cheatCount == 1 ? "%u cheat" : "%u cheats", box->cheatCount);
+        // Without cheats, the menu still offers the cheat search.
+        if (box->cheatCount == 0)
+            strcpy(count, "search only");
+        else
+            mini_snprintf(count, sizeof(count), box->cheatCount == 1 ? "%u cheat" : "%u cheats", box->cheatCount);
         putStep(PARASITE_STEP_CHEAT_MENU, "Cheat menu", error ? "OFF" : count, error ? COLOR_YELLOW : COLOR_GREEN);
         // Like the real Pico Loader: DSi mode if the console runs in DSi mode and the game supports it.
         bool dsiMode = (REG_SCFG_ROM & 3) == 1 && (box->romUnitCode & NDS_HEADER_UNIT_CODE_SUPPORTS_DSI_MODE);
@@ -300,24 +361,44 @@ static void compose(const parasite_mailbox_t* box, u32 step, u32 error)
     // The arm7 part loads the saved combination before the cheat menu step; until then box->hotkey is the default.
     if (step >= PARASITE_STEP_CHEAT_MENU && (!showError || box->installCheatMenu))
     {
-        putText(1, HOTKEY_ROW - 1, "In-game menu hotkey:", COLOR_GRAY);
+        putText(1, HOTKEY_LABEL_ROW, "In-game menu hotkey:", COLOR_LIGHT);
         putHotkey(HOTKEY_ROW, box->hotkey, COLOR_CYAN);
-        putText(1, HINT_ROW, "Hold Down to change the hotkey", COLOR_GRAY);
+        putText(1, STATUS_ROW, "Hold Down to change the hotkey", COLOR_LIGHT);
     }
+}
+
+/// @brief Returns the height of the text of the given row.
+static u32 getRowTextY(u32 row)
+{
+    if (row == HEADER_ROW)
+        return HEADER_TEXT_Y;
+    if (row == STATUS_ROW)
+        return STATUS_TEXT_Y;
+    return FIRST_ROW_TEXT_Y + (row - 1) * ROW_HEIGHT;
 }
 
 static void drawCell(u32 index, u16 cell)
 {
     u32 c = cell & 0xFF;
-    if (c < 0x20 || c > 0x7F)
-        c = '?';
-    const u8* glyph = &sFont[(c - 0x20) * 8];
+    const u8* glyph;
+    if (c >= ICON_FIRST_CHAR && c < ICON_FIRST_CHAR + ICON_COUNT)
+    {
+        glyph = &sIcons[(c - ICON_FIRST_CHAR) * 8];
+    }
+    else
+    {
+        if (c < 0x20 || c > 0x7F)
+            c = '?';
+        glyph = &sFont[(c - 0x20) * 8];
+    }
+    u32 row = index / TEXT_COLUMNS;
     u16 color = sColors[cell >> 8];
-    vu16* line = FRAMEBUFFER + (index / TEXT_COLUMNS) * 8 * SCREEN_WIDTH + (index % TEXT_COLUMNS) * 8;
+    u16 background = row == HEADER_ROW || row == STATUS_ROW ? BAND_COLOR : BACKDROP_COLOR;
+    vu16* line = FRAMEBUFFER + getRowTextY(row) * SCREEN_WIDTH + (index % TEXT_COLUMNS) * 8;
     for (u32 y = 0; y < 8; y++, line += SCREEN_WIDTH)
     {
         for (u32 x = 0; x < 8; x++)
-            line[x] = (glyph[y] >> x) & 1 ? color : 0;
+            line[x] = (glyph[y] >> x) & 1 ? color : background;
     }
 }
 
@@ -339,19 +420,29 @@ void statusScreen_show()
         return;
     sShown = true;
     REG_VRAMCNT_B = VRAMCNT_B_LCDC;
-    for (u32 i = 0; i < SCREEN_WIDTH * SCREEN_HEIGHT / 2; i++)
-        ((vu32*)FRAMEBUFFER)[i] = 0;
+    for (u32 y = 0; y < SCREEN_HEIGHT; y++)
+    {
+        u16 color = y < BAND_HEIGHT || y >= SCREEN_HEIGHT - BAND_HEIGHT ? BAND_COLOR : BACKDROP_COLOR;
+        for (u32 x = 0; x < SCREEN_WIDTH; x++)
+            FRAMEBUFFER[y * SCREEN_WIDTH + x] = color;
+    }
     for (u32 i = 0; i < TEXT_ROWS * TEXT_COLUMNS; i++)
         sDrawnCells[i] = EMPTY_CELL;
     // The next update composes the screen.
     sComposedStep = ~0u;
     REG_MASTER_BRIGHT = 0;
     REG_DISPCNT = DISPCNT_VRAM_B_DISPLAY;
-    // The bottom screen shows only a black backdrop.
-    PALETTE_BG_SUB[0] = 0;
+    // The bottom screen shows only the backdrop.
+    PALETTE_BG_SUB[0] = BACKDROP_COLOR;
     REG_MASTER_BRIGHT_SUB = 0;
     REG_DISPCNT_SUB = DISPCNT_BACKDROP_ONLY;
     REG_POWCNT = POWCNT_LCD | POWCNT_2D_MAIN | POWCNT_2D_SUB | POWCNT_MAIN_ON_TOP;
+}
+
+void statusScreen_finish()
+{
+    if (sShown)
+        PALETTE_BG_SUB[0] = 0;
 }
 
 bool statusScreen_hotkeyActive()

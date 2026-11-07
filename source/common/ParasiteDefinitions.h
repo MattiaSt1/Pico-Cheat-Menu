@@ -49,7 +49,8 @@
 
 /// @brief Upper limit of the room in the cheat list for the cheats that are turned on in the menu. The room is as
 ///        large as all cheats of the game together, up to this size, but never smaller than the launcher cheats. The
-///        cheat list is in the small arm7 memory of the game.
+///        room for the cheats of locked values comes on top of it. The cheat list is in the small arm7 memory of the
+///        game.
 #define PARASITE_MAX_ACTIVE_CHEATS_SIZE 4096
 
 /// @brief Values exchanged through the IPC sync register between the two processors, in this order.
@@ -74,8 +75,7 @@
 #define PARASITE_ERROR_REAL_LOADER          3
 #define PARASITE_ERROR_TRANSPARENT          4
 #define PARASITE_ERROR_GAME_UNSUPPORTED     5
-#define PARASITE_ERROR_NO_USRCHEAT          6
-#define PARASITE_ERROR_GAME_NOT_FOUND       7
+#define PARASITE_ERROR_NO_SEARCH_FILE       6
 #define PARASITE_ERROR_OUT_OF_MEMORY        8
 #define PARASITE_ERROR_MENU_FILE            9
 #define PARASITE_ERROR_LOADER_UNSUPPORTED   10

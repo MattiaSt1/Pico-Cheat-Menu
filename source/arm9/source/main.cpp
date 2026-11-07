@@ -103,6 +103,7 @@ extern "C" void loaderMain()
         }
     }
 
+    statusScreen_finish();
     parasite_sendSync(PARASITE_SYNC_ARM9_DECIDED);
     parasite_waitSync(PARASITE_SYNC_ARM7_IN_WRAM);
     bootRealLoader(box->realLoader9, (box->realLoader9Size + 1) & ~1, box->realLoader7,

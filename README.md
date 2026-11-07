@@ -4,7 +4,8 @@ An in-game cheat menu for [Pico Loader](https://github.com/LNH-team/pico-loader)
 
 Press **L + R + Down + Select** (the default combination, which can be changed on the status screen) while a game is
 running to open the menu. It lists every cheat of the game from `usrcheat.dat`, including folders and notes, and turns
-cheats on and off without restarting the game.
+cheats on and off without restarting the game. Its cheat search finds new cheats while you play: search the memory of
+the game for your money or your lives, then change or lock the value you found.
 
 ## Features
 
@@ -14,6 +15,8 @@ cheats on and off without restarting the game.
   "Launcher cheat 1", "Launcher cheat 2" and so on.
 - Works with any fork of Pico Loader that accepts cheats from the launcher (API version 3). The menu is added while
   the game starts: no ROM is patched and the loader does not need to be rebuilt.
+- A cheat search that finds the address of any value of the game, also in games without cheats in `usrcheat.dat`. The
+  values it finds can be changed once or locked, so that they keep their value.
 - The game is paused while the menu is open, and its graphics are restored when the menu closes.
 
 ## Controls
@@ -26,8 +29,39 @@ cheats on and off without restarting the game.
 | B            | Go back / close the menu                                                 |
 | Select       | Show the description of the selected cheat (Select or B closes it)       |
 | Start        | Turn off all cheats (only those of the open folder, when inside one)     |
+| R            | Open the cheat search                                                    |
 
 The changes are applied when the menu is closed.
+
+## Cheat search
+
+The cheat search finds where the game keeps a value, such as the money, the lives or the time, in the memory of the
+game: up to 4 MB in DS mode and about 15.5 MB in DSi mode, where a search takes longer. A typical search for the money:
+
+1. Open the menu and press **R**. Choose the **value size** (1, 2 or 4 bytes; most values use 2 or 4) and keep
+   **Search for** on "Equal to value". Enter the amount of money you see in **Value** and choose **Start search**.
+2. Close the menu, earn or spend some money, open the menu again and press **R**. Enter the new amount and choose
+   **Search again**. Repeat until few results are left.
+3. Choose **Show results**. On a result, **A** changes its value right away and **Start** locks it: a cheat then keeps
+   writing the value while the game runs.
+
+When the game does not show the value (a hidden counter or a health bar), search for "Unknown value" first, then
+use "Changed", "Unchanged", "Increased" or "Decreased" after the value changed in the game.
+
+Up to 16 values can be locked. The search and the locked values are kept while the game runs, also when the menu is
+closed, and are cleared when a game is started. The search uses `/_pico/cheatsearch.bin`, which takes about 18 MB on
+the SD card and is created the first time. If the SD card has less than about 20 MB free, or its free space is too
+fragmented, the menu works without the cheat search. Results are listed once at most 128 are left.
+
+| Button       | Action in the cheat search                                               |
+|--------------|--------------------------------------------------------------------------|
+| Up / Down    | Move through the options or the results                                  |
+| Left / Right | Change the size or the comparison / page up and down in the results      |
+| A            | Select an option / edit the value of a result                            |
+| Start        | Lock or unlock the selected result                                       |
+| B            | Go back (R also returns from the options to the cheat list)              |
+
+While a number is edited, Left and Right select a digit, Up and Down change it, A confirms and B cancels.
 
 ## Status screen
 
@@ -58,13 +92,15 @@ number of cheats of the game. If the cheat menu is not available, the screen tel
 
 | Message                                               | What to do                                                    |
 |-------------------------------------------------------|---------------------------------------------------------------|
-| Game not found in usrcheat.dat                        | The database has no cheats for this game.                     |
-| /_pico/usrcheat.dat not found                         | Put `usrcheat.dat` in `_pico/`.                               |
 | Game not supported by the menu                        | The game's code cannot be hooked (for example, homebrew).     |
+| Can't create /_pico/cheatsearch.bin                   | The game has no cheats and the cheat search does not fit: free about 20 MB on the SD card. |
 | Too many cheats for the menu                          | The cheats of the game do not fit in memory.                  |
 | Can't write /_pico/cheatmenu.bin                      | Free some space on the SD card, or delete the file to have it created again. |
 | This Pico Loader version is not supported by the menu | Use a fork of Pico Loader with API version 3 in `_pico/loader/`. |
 | Turned off by /_pico/parasite-transparent             | Delete that file to turn the menu back on.                    |
+
+When the game has no cheats (it is not in `usrcheat.dat`, or the file is missing) the status screen shows
+"search only": the list of the menu is empty and **R** opens the cheat search.
 
 Messages in red mean that the game cannot start at all: the launcher passed no DLDI driver, the SD card cannot be
 read, or Pico Loader is missing from `_pico/loader/`.
@@ -109,7 +145,9 @@ same parameters.
 4. **Resident part** (`source/resident`): stays in memory with the cheat list. When the button combination is
    pressed, it swaps the menu from `_pico/cheatmenu.bin` into the memory of the game's code and back.
 5. **Cheat menu** (`source/menu`): reads the cheats from `usrcheat.dat` on the SD card while the game is paused and
-   writes the enabled cheats to the cheat list, which the cheat engine of Pico Loader runs.
+   writes the enabled cheats to the cheat list, which the cheat engine of Pico Loader runs. The cheat search
+   (`cheatSearch.c`) keeps its state, its results and a snapshot of the memory in `_pico/cheatsearch.bin`, since the
+   menu has very little memory of its own; a locked value becomes an Action Replay cheat in the cheat list.
 
 The definitions shared by these parts are in `source/common`, mainly `ParasiteDefinitions.h` and
 `CheatMenuDefinitions.h`.

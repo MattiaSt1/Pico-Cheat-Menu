@@ -18,7 +18,7 @@
 extern "C" parasite_installer_header_t installer_header;
 extern "C" void installer_flush();
 
-static_assert(sizeof(cheat_menu_resident_t) == 108, "Must match the header in resident/entry.s");
+static_assert(sizeof(cheat_menu_resident_t) == 116, "Must match the header in resident/entry.s");
 static_assert(sizeof(parasite_installer_header_t) == 16, "Must match the header in installer/entry.s");
 
 /// @brief Adds delta to every word in [begin, end) that points into [oldStart, oldEnd).
@@ -166,6 +166,8 @@ extern "C" void installer_run()
     resident->dldiDriver = (const void*)toGameAddress(driver);
     resident->list = (cheat_menu_list_header_t*)toGameAddress(list);
     resident->menuAddress = menuAddress;
+    resident->searchMemorySize = cheatSearch_getMemorySize(seenAddress,
+        dsiMode ? CHEAT_SEARCH_MEMORY_SIZE_DSI : CHEAT_SEARCH_MEMORY_SIZE_DS);
     resident->irqHandlerContinueAddress = irqHandlerAddress + continueWords * 4;
     resident->cardLockAddress = params->sdkVersion >= 0x05000000 ? 0x02FFFFE0 : 0x027FFFE0;
 

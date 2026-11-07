@@ -5,7 +5,8 @@
 // real Pico Loader from /_pico/loader/. Then it prepares the in-game cheat menu of the game:
 //   1. It checks that the arm9 binary of the game contains the SDK function that the menu hooks (OS_IrqHandler).
 //   2. It indexes the cheats of the game in usrcheat.dat (CheatDatabase).
-//   3. It writes the menu image (the menu code and the cheat menu data) to the cheat menu file.
+//   3. It writes the menu image (the menu code and the cheat menu data) to the cheat menu file, and prepares the cheat
+//      search file. The menu is installed even if the game has no cheats, so that the cheat search can be used.
 //   4. It builds the cheat list for the real Pico Loader: the marker, the launcher cheats, room for more cheats, and
 //      the resident part of the menu with a copy of the DLDI driver.
 // Meanwhile the arm9 part shows the progress on the status screen. It then decides whether the real Pico Loader can
@@ -29,6 +30,10 @@
 /// @brief Maximum sizes of the binaries of the real Pico Loader.
 #define REAL_LOADER7_MAX_SIZE   0x40000
 #define REAL_LOADER9_MAX_SIZE   0x20000
+
+/// @brief Free space that the cheat search file leaves on the sd card besides the room for the cheat menu file, so that
+///        the real Pico Loader can still create the save file of the game.
+#define SEARCH_FILE_FREE_SPACE  0x100000
 
 FATFS gFatFs;
 DldiDriver* gDiskDriver;
@@ -195,7 +200,8 @@ static void copyDldiDriver(parasite_mailbox_t* box)
 }
 
 /// @brief Copies the cheats passed by the launcher to the mailbox. After a soft reset of the game, Pico Loader passes
-///        back the cheat list of the parasite: then only the enabled cheats after the marker are kept.
+///        back the cheat list of the parasite: then only the enabled cheats after the marker are kept, without those of
+///        the locked values, which end with the cheat search of the game.
 static void copyLauncherCheats(parasite_mailbox_t* box)
 {
     auto cheats = gLoaderHeader.v3.cheats;
@@ -205,13 +211,15 @@ static void copyLauncherCheats(parasite_mailbox_t* box)
     if (cheats->length >= sizeof(*list) && cheats->numberOfCheats >= 1 &&
         list->markerLength == sizeof(list->marker) && list->marker[1] == CHEAT_MENU_LIST_MAGIC0 &&
         list->marker[3] == CHEAT_MENU_LIST_MAGIC1 && list->marker[5] >= sizeof(*list) &&
-        list->marker[5] <= list->length)
+        list->marker[5] <= list->length && list->length - list->marker[5] >= sizeof(cheat_menu_resident_t))
     {
-        auto first = (const u8*)(list + 1);
-        u32 room = list->marker[5] - sizeof(*list);
+        u32 lockCheats = cheatMenuList_getLockCheatCount(list);
+        u32 lockCheatsSize = lockCheats * CHEAT_SEARCH_LOCK_CHEAT_SIZE;
+        auto first = (const u8*)(list + 1) + lockCheatsSize;
+        u32 room = list->marker[5] - sizeof(*list) - lockCheatsSize;
         u32 size = 0;
         u32 count = 0;
-        while (count < list->numberOfCheats - 1 && room - size >= 4)
+        while (count < list->numberOfCheats - 1 - lockCheats && room - size >= 4)
         {
             u32 cheatLength = *(const u32*)(first + size);
             if ((cheatLength & 7) || cheatLength > room - size - 4)
@@ -394,9 +402,10 @@ static cheat_menu_list_header_t* buildCheatList(const parasite_mailbox_t* box, u
     return list;
 }
 
-/// @brief Stores the sector runs of the first \p sectors sectors of the open file in the resident part, from the
-///        cluster map of the file. Returns false if the file is too fragmented or too short.
-static bool getFileRuns(FIL* file, u32 sectors, cheat_menu_resident_t* resident)
+/// @brief Stores the sector runs of the first \p sectors sectors of the open file in \p runs, which has room for
+///        CHEAT_MENU_MAX_FILE_RUNS runs, from the cluster map of the file. Returns false if the file is too fragmented
+///        or too short.
+static bool getFileRuns(FIL* file, u32 sectors, cheat_menu_sector_run_t* runs, u32& runCount)
 {
     DWORD clusterMap[1 + 2 * CHEAT_MENU_MAX_FILE_RUNS + 1];
     clusterMap[0] = sizeof(clusterMap) / sizeof(clusterMap[0]);
@@ -406,13 +415,13 @@ static bool getFileRuns(FIL* file, u32 sectors, cheat_menu_resident_t* resident)
     if (result != FR_OK)
         return false;
     const FATFS* fs = file->obj.fs;
-    resident->fileRunCount = 0;
+    runCount = 0;
     for (const DWORD* fragment = &clusterMap[1]; fragment[0] != 0 && sectors != 0; fragment += 2)
     {
         u32 count = fragment[0] * fs->csize;
         if (count > sectors)
             count = sectors;
-        auto& run = resident->fileRuns[resident->fileRunCount++];
+        auto& run = runs[runCount++];
         run.sector = fs->database + (fragment[1] - 2) * fs->csize;
         run.count = count;
         sectors -= count;
@@ -431,9 +440,65 @@ static bool writeMenuFile(const u8* image, u32 imageSize, cheat_menu_resident_t*
     u32 fileSize = 2 * imageSize;
     bool ok = (f_size(&file) >= fileSize || (f_lseek(&file, fileSize) == FR_OK && f_tell(&file) == fileSize)) &&
         f_lseek(&file, 0) == FR_OK && f_write(&file, image, imageSize, &written) == FR_OK && written == imageSize &&
-        f_sync(&file) == FR_OK && getFileRuns(&file, fileSize / CHEAT_MENU_SECTOR_SIZE, resident);
+        f_sync(&file) == FR_OK &&
+        getFileRuns(&file, fileSize / CHEAT_MENU_SECTOR_SIZE, resident->fileRuns, resident->fileRunCount);
     f_close(&file);
     return ok;
+}
+
+/// @brief Returns whether the sd card has at least \p bytes free bytes.
+static bool hasFreeSpace(u32 bytes)
+{
+    DWORD clusters;
+    FATFS* fs;
+    return f_getfree("fat:", &clusters, &fs) == FR_OK && clusters * fs->csize > bytes / CHEAT_MENU_SECTOR_SIZE;
+}
+
+/// @brief Opens the cheat search file, creates it with its full size if needed, clears the search of the previous
+///        game and stores its sector runs in the cheat menu data. The file only grows if the sd card keeps room for the
+///        cheat menu file and a save file, since the cheat search is optional. Returns false if the file cannot be
+///        prepared or is too fragmented.
+static bool openSearchFile(cheat_menu_data_t* data, u32 imageSize)
+{
+    const u32 fileSize = CHEAT_SEARCH_FILE_SECTORS * CHEAT_MENU_SECTOR_SIZE;
+    FIL file;
+    if (f_open(&file, CHEAT_SEARCH_FILE_PATH, FA_OPEN_ALWAYS | FA_READ | FA_WRITE) != FR_OK)
+        return false;
+    bool sized = f_size(&file) >= fileSize;
+    if (!sized && hasFreeSpace(fileSize - f_size(&file) + 2 * imageSize + SEARCH_FILE_FREE_SPACE))
+    {
+        // A new file is allocated in one piece if possible. Its content does not matter: the menu only reads what it
+        // wrote.
+        sized = (f_size(&file) == 0 && f_expand(&file, fileSize, 1) == FR_OK) ||
+            (f_lseek(&file, fileSize) == FR_OK && f_tell(&file) == fileSize);
+    }
+    auto zeros = (u8*)malloc(CHEAT_MENU_SECTOR_SIZE);
+    bool ok = false;
+    if (sized && zeros)
+    {
+        memset(zeros, 0, CHEAT_MENU_SECTOR_SIZE);
+        UINT written;
+        ok = f_lseek(&file, 0) == FR_OK && f_write(&file, zeros, CHEAT_MENU_SECTOR_SIZE, &written) == FR_OK &&
+            written == CHEAT_MENU_SECTOR_SIZE && f_sync(&file) == FR_OK &&
+            getFileRuns(&file, CHEAT_SEARCH_FILE_SECTORS, data->searchRuns, data->searchRunCount);
+    }
+    free(zeros);
+    f_close(&file);
+    return ok;
+}
+
+/// @brief Prepares the cheat search file for the menu. The cheat search is optional: if the file cannot be prepared,
+///        the menu has no cheat search and the sd card keeps its free space.
+static void prepareSearchFile(cheat_menu_data_t* data, u32 imageSize)
+{
+    if (openSearchFile(data, imageSize))
+        return;
+    // A file that is too fragmented is created again, in one piece if possible.
+    data->searchRunCount = 0;
+    if (f_unlink(CHEAT_SEARCH_FILE_PATH) == FR_OK && openSearchFile(data, imageSize))
+        return;
+    data->searchRunCount = 0;
+    f_unlink(CHEAT_SEARCH_FILE_PATH);
 }
 
 /// @brief Prepares the cheat menu of the game and stores the cheat list in the mailbox. Returns why the cheat menu
@@ -446,8 +511,6 @@ static u32 prepareCheatMenu(parasite_mailbox_t* box, const u8* romHeader)
     CheatDatabase database;
     auto launcherCheats = (const pload_cheats_t*)box->launcherCheats;
     database.Load(romHeader, launcherCheats, PARASITE_MAX_ACTIVE_CHEATS_SIZE);
-    if (!database.HasCheats())
-        return fileExists(PARASITE_USRCHEAT_PATH) ? PARASITE_ERROR_GAME_NOT_FOUND : PARASITE_ERROR_NO_USRCHEAT;
 
     // The launcher cheats that are not in the database are stored in the menu image, preprocessed like Pico Loader
     // does, so that the menu can copy them to the cheat list as they are.
@@ -470,7 +533,14 @@ static u32 prepareCheatMenu(parasite_mailbox_t* box, const u8* romHeader)
     free(processedCheats);
     if (!image)
         return PARASITE_ERROR_OUT_OF_MEMORY;
-    auto list = buildCheatList(box, database.GetActiveCheatsSize(), imageSize);
+    auto data = (cheat_menu_data_t*)(image + ((const cheat_menu_image_header_t*)image)->dataOffset);
+    prepareSearchFile(data, imageSize);
+    // Without cheats, the menu has nothing to offer if the cheat search is not available either.
+    if (database.GetCheatCount() == 0 && data->searchRunCount == 0)
+        return PARASITE_ERROR_NO_SEARCH_FILE;
+    // The cheat list also has room for the cheats of the values that the cheat search locks.
+    u32 activeCheatsSize = database.GetActiveCheatsSize() + CHEAT_SEARCH_MAX_LOCKS * CHEAT_SEARCH_LOCK_CHEAT_SIZE;
+    auto list = buildCheatList(box, activeCheatsSize, imageSize);
     if (!list)
         return PARASITE_ERROR_OUT_OF_MEMORY;
     auto resident = (cheat_menu_resident_t*)((u8*)list + list->marker[5]);

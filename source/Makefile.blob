@@ -3,10 +3,10 @@
 #
 #   make -f Makefile.blob NAME=<name> SOURCEDIR=<directory>
 #
-# The blob consists of $(SOURCEDIR)/entry.s, which must start with the header of the blob, and $(SOURCEDIR)/$(NAME).c,
-# linked with $(SOURCEDIR)/$(NAME).ld. Its address is only known at runtime, so it is linked at address 0 and may only
-# use pc-relative addressing. After linking, the build fails if the blob contains absolute relocations (except in the
-# header) or interworking veneers.
+# The blob consists of $(SOURCEDIR)/entry.s, which must start with the header of the blob, and the C files of
+# $(SOURCEDIR), linked with $(SOURCEDIR)/$(NAME).ld. Its address is only known at runtime, so it is linked at address 0
+# and may only use pc-relative addressing. After linking, the build fails if the blob contains absolute relocations
+# (except in the header) or interworking veneers.
 
 .DEFAULT_GOAL := all
 
@@ -32,7 +32,7 @@ ELF			:= $(BUILDDIR)/$(NAME).elf
 BIN			:= arm7/data/$(NAME).bin
 LDSCRIPT	:= $(SOURCEDIR)/$(NAME).ld
 
-SOURCES		:= $(SOURCEDIR)/entry.s $(SOURCEDIR)/$(NAME).c
+SOURCES		:= $(SOURCEDIR)/entry.s $(wildcard $(SOURCEDIR)/*.c)
 OBJS		:= $(patsubst $(SOURCEDIR)/%,$(BUILDDIR)/%.o,$(SOURCES))
 DEPS		:= $(OBJS:.o=.d)
 
